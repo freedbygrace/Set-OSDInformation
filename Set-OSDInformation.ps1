@@ -310,9 +310,7 @@ ForEach ($ModuleGroup In $ModuleGroups)
                       }
                                                                                   
                     #Always define a variable that details when the system was deployed. The timestamp is according to when this script calculated the current date/time which is converted to the destination time zone ID, then to UTC, then converted to the WMI format and stored.
-                      $ConvertedSystemTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), ($DestinationTimeZoneID))
-                      $ConvertedSystemTimeUTC = $ConvertedSystemTime.ToUniversalTime()
-                      $DefaultOSDVariables += (Set-Variable -Name "DeploymentTimestamp" -Value ([System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($ConvertedSystemTimeUTC)) -PassThru -Force -Verbose)
+                      $DefaultOSDVariables += (Set-Variable -Name "DeploymentTimestamp" -Value ((Get-Process -ID $PID).StartTime) -PassThru -Force -Verbose)
             
                     #Always define a variable that details which product deployed the task sequence
                       $DefaultOSDVariables += (Set-Variable -Name "DeploymentProduct" -Value ($DeploymentProduct) -PassThru -Force -Verbose)
@@ -323,6 +321,8 @@ ForEach ($ModuleGroup In $ModuleGroups)
                     #Create a variable for each default variable specified
                       ForEach ($DefaultOSDVariable In $DefaultOSDVariableListSorted)
                         {
+                            $DefaultOSDVariableValueConverted = $Null
+                        
                             #Remove all instances of invalid character(s) from the variable name(s) using a regular expression. This is to avoid potential WMI property creation error(s).
                               $DefaultOSDVariableName = $DefaultOSDVariable -ireplace "(_)|(\s)|(\.)", ""
                               
@@ -337,7 +337,7 @@ ForEach ($ModuleGroup In $ModuleGroups)
                                           $DefaultOSDVariableValueAsDateTime = Get-Date -Date "$($DefaultOSDVariableValue)"
                                           $ConvertedDefaultOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($DefaultOSDVariableValueAsDateTime), ($DestinationTimeZoneID))
                                           $ConvertedDefaultOSDVariableDateTimeUTC = $ConvertedDefaultOSDVariableDateTime.ToUniversalTime()
-                                          $DefaultOSDVariableValueConverted = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($ConvertedDefaultOSDVariableDateTimeUTC)   
+                                          $DefaultOSDVariableValueConverted = $ConvertedDefaultOSDVariableDateTimeUTC
                                       }
                           
                                     {($DefaultOSDVariableValue -imatch "^True$|^False$")}
@@ -366,7 +366,7 @@ ForEach ($ModuleGroup In $ModuleGroups)
                                           
                                           $DefaultOSDVariableValueConverted = "$($TaskSequenceXMLDefinition_ImagePackageID[0].Node.InnerText)"
                                           
-                                          If ($DefaultOSDVariableValueConverted)
+                                          If ([String]::IsNullOrEmpty($DefaultOSDVariableValueConverted) -eq $False)
                                             {
                                                 $DefaultOSDVariables += (Set-Variable -Name "ImagePackageID" -Value ($DefaultOSDVariableValueConverted) -PassThru -Force -Verbose)
                                             }
@@ -396,6 +396,8 @@ ForEach ($ModuleGroup In $ModuleGroups)
                   #Create all the variable(s) that will be written to the system in the desired storage location
                     ForEach ($CustomOSDVariable In $CustomOSDVariableListSorted)
                       {
+                          $CustomOSDVariableValueConverted = $Null
+                      
                           #Remove the attribute prefix from the variable name(s). This is for cleaner output purposes.
                             $CustomOSDVariableName = $CustomOSDVariable -ireplace "$($OSDVariablePrefix)", ""
                             
@@ -403,14 +405,14 @@ ForEach ($ModuleGroup In $ModuleGroups)
                             $CustomOSDVariableValue = $TSEnvironment.Value($CustomOSDVariable)
                             
                           #Attempt to format any custom variable(s) to their respective data types. This is for data consistency purposes.
-                            Switch ($CustomOSDVariable)
+                            Switch ($CustomOSDVariableName)
                               {
                                   {($_ -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
                                     {
                                           $CustomOSDVariableValueAsDateTime = Get-Date -Date "$($CustomOSDVariableValue)"
                                           $ConvertedCustomOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($CustomOSDVariableValueAsDateTime), ($DestinationTimeZoneID))
                                           $ConvertedCustomOSDVariableDateTimeUTC = $ConvertedCustomOSDVariableDateTime.ToUniversalTime()
-                                          $CustomOSDVariableValueConverted = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($ConvertedCustomOSDVariableDateTimeUTC)  
+                                          $CustomOSDVariableValueConverted = $ConvertedCustomOSDVariableDateTimeUTC
                                     }
                                                                         
                                   {($CustomOSDVariableValue -imatch "^True$|^False$")}
@@ -445,7 +447,7 @@ ForEach ($ModuleGroup In $ModuleGroups)
                   #Attempt to automatically create a timespan between the OSD Start Time and OSD End Time (This will only occur if these custom variables exist) (This data will allow you to track how long a task sequence deployment took for a device)                    
                     If (($CustomOSDVariables.Name -icontains "OSDStartTime") -and ($CustomOSDVariables.Name -icontains "OSDEndTime"))
                       {                          
-                          $OSDTimeSpan = New-TimeSpan -Start ([System.Management.ManagementDateTimeConverter]::ToDateTime($OSDStartTime)) -End ([System.Management.ManagementDateTimeConverter]::ToDateTime($OSDEndTime))
+                          $OSDTimeSpan = New-TimeSpan -Start ($OSDStartTime) -End ($OSDEndTime)
 
                           $CustomOSDVariables += (Set-Variable -Name "OSDTotalSeconds" -Value ([System.Math]::Round($OSDTimeSpan.TotalSeconds, 2)) -PassThru -Force -Verbose)
                           $CustomOSDVariables += (Set-Variable -Name "OSDTotalMinutes" -Value ([System.Math]::Round($OSDTimeSpan.TotalMinutes, 2)) -PassThru -Force -Verbose)
@@ -460,9 +462,7 @@ ForEach ($ModuleGroup In $ModuleGroups)
                       {
                           #If specified, write the OSD information to a new or existing registry key
                             If ($Registry.IsPresent -eq $True)
-                              {
-                                  $CreatedRegistryObjects = @()
-                              
+                              {                              
                                   ForEach ($OSDVariable in $OSDVariables)
                                     {
                                         $OSDVariableName = "$($OSDVariable.Name)"
@@ -476,69 +476,21 @@ ForEach ($ModuleGroup In $ModuleGroups)
                                               $OSDVariableValue = ""
                                           }
         
-                                        $CreatedRegistryObjects += (New-RegistryItem -Key "$($RegistryKeyPath)" -ValueName "$($OSDVariableName)" -Value ($OSDVariableValue) -ValueType 'String' -PassThru -Verbose)
+                                        New-RegistryItem -Key "$($RegistryKeyPath)" -ValueName "$($OSDVariableName)" -Value ($OSDVariableValue) -ValueType 'String' -Verbose
                                     }
-                                    
-                                  #If specified, write the OSD information to a new WMI class. The class will be removed and recreated if it exists! A MOF file will be dynamically generated and compiled using MOFCOMP with auto recovery in the event of WMI repository rebuilds.
-                                    If ($WMI.IsPresent -eq $True)
-                                      {
-                                      #region Dynamic MOF Creation                                          
-                                          $MOFContents = $Null
-
-                                          [System.Text.StringBuilder]$MOFContents = [System.Text.StringBuilder]::New()
+                              }
+                              
+#region Dynamic MOF Creation
+                          #If specified, write the OSD information to a new WMI class. The class will be removed and recreated if it exists! A MOF file will be dynamically generated and compiled using MOFCOMP with auto recovery in the event of WMI repository rebuilds. In other words, this custom WMI class will survive rebuilds of the WMI repository.
+                            If ($WMI.IsPresent -eq $True)
+                              {      
+                                  [System.Text.StringBuilder]$MOFContents = [System.Text.StringBuilder]::New()
+                                  
+                                  [System.Text.StringBuilder]$WMIInstanceDefinition = [System.Text.StringBuilder]::New()
                                           
-                                          [Void]$MOFContents.AppendLine()
+                                  [Void]$MOFContents.AppendLine()
                                           
-                                          [String]$WMIRegistryProvider = @"
-//==================================================================
-// Register Registry property provider (shipped with WMI)
-// Refer to WMI SDK documentation for use
-//==================================================================
-
-#pragma namespace(`"$("\\\\.\\$($Namespace.Replace('\', '\\'))")`")
-
-// Registry instance provider
-instance of __Win32Provider as `$InstProv
-{
-	Name    ="RegProv" ;
-	ClsID   = "{fe9af5c0-d3b6-11ce-a5b6-00aa00680c3f}" ;
-	ImpersonationLevel = 1;
-	PerUserInitialization = "False";
-};
-
-instance of __InstanceProviderRegistration
-{
-	Provider    = `$InstProv;
-	SupportsPut = True;
-	SupportsGet = True;
-	SupportsDelete = False;
-	SupportsEnumeration = True;
-};
-
-
-// Registry property provider
-instance of __Win32Provider as `$PropProv
-{
-	Name    ="RegPropProv" ;
-	ClsID   = "{72967901-68EC-11d0-B729-00AA0062CBB7}";
-	ImpersonationLevel = 1;
-	PerUserInitialization = "False";
-};
-
-instance of __PropertyProviderRegistration
-{
-	Provider     = `$PropProv;
-	SupportsPut  = True;
-	SupportsGet  = True;
-};
-"@
-
-                                      [Void]$MOFContents.Append($WMIRegistryProvider)
-
-                                      [Void]$MOFContents.AppendLine()
-                                      [Void]$MOFContents.AppendLine()
-
-                                      [String]$WMIClassDefinitionHeader = @"
+                                  [String]$WMIClassDefinitionHeader = @"
 //==================================================================
 // OSD Information class and instance definition
 //==================================================================
@@ -557,54 +509,59 @@ class $($Class)
 
 "@
 
-                                        [Void]$MOFContents.Append($WMIClassDefinitionHeader)
+                                  [Void]$MOFContents.Append($WMIClassDefinitionHeader)
                                     
-                                          #Add properties to the newly created WMI Class, set their individual data types, and set their individual values
-                                            ForEach ($OSDVariable In $OSDVariables)
-                                              {
-                                                  [String]$OSDVariableName = $OSDVariable.Name
+                                    #Add properties to the newly created WMI Class, set their individual data types, and set their individual values
+                                      ForEach ($OSDVariable In $OSDVariables)
+                                        {
+                                            [String]$OSDVariableName = $OSDVariable.Name
                                           
-                                                  [String]$OSDVariableType = "$($OSDVariable.Value.GetType().Name)"
+                                            [String]$OSDVariableType = "$($OSDVariable.Value.GetType().Name)"
                                           
-                                                  $OSDVariableValue = ($OSDVariable.Value -Join ", ").ToString().Trim()
+                                            $OSDVariableValue = ($OSDVariable.Value -Join ", ").ToString().Trim()
                                           
-                                                  #Attempt to specify data type before adding the property to the WMI class
-                                                  #Valid values are the following: None, SInt16, SInt32, Real32, Real64, String, Boolean, Object, SInt8, UInt8, UInt16, UInt32, SInt64, UInt64, DateTime, Reference, Char16 (Example: [System.Management.CimType]::GetNames([System.Management.CimType]))
-                                                    Switch ($OSDVariableType)
+                                            #Attempt to specify data type before adding the property to the WMI class
+                                            #Valid values are the following: None, SInt16, SInt32, Real32, Real64, String, Boolean, Object, SInt8, UInt8, UInt16, UInt32, SInt64, UInt64, DateTime, Reference, Char16 (Example: [System.Management.CimType]::GetNames([System.Management.CimType]))
+                                              Switch ($OSDVariableType)
+                                                {
+                                                    {($_ -imatch '.*Date.*') -or ($OSDVariableName -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
                                                       {
-                                                          {($_ -imatch '.*Date.*') -or ($OSDVariableName -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
-                                                            {
-                                                                $PropertyType = "DateTime"
-                                                            }
-                                                  
-                                                          {($_ -imatch 'Bool|Boolean')}
-                                                            {
-                                                                $PropertyType = "Boolean"
-                                                            }
-                                                    
-                                                          {($_ -imatch 'Double')}
-                                                            {
-                                                                $PropertyType = "Real64"
-                                                            }
-                                                                                                        
-                                                          Default
-                                                            {
-                                                                $PropertyType = "String"
-                                                            }     
+                                                          $PropertyType = "DateTime"
                                                       }
+                                                  
+                                                    {($_ -imatch 'Bool|Boolean')}
+                                                      {
+                                                          $PropertyType = "Boolean"
+                                                      }
+                                                    
+                                                    {($_ -imatch 'Double')}
+                                                      {
+                                                          $PropertyType = "Real64"
+                                                      }
+                                                                                                        
+                                                    Default
+                                                      {
+                                                          $PropertyType = "String"
+                                                      }     
+                                                }
                                                                                    
-                                                      $WMIPropertyDefinition = "`t$($PropertyType) $($OSDVariableName);"
+                                            $WMIPropertyDefinition = "`t$($PropertyType) $($OSDVariableName);"
                                                       
-                                                      [Void]$MOFContents.Append($WMIPropertyDefinition)
-                                                      [Void]$MOFContents.AppendLine()
-                                              }
-                                                                                
-                                          [Void]$MOFContents.Append("};")
+                                            $WMIInstancePropertyName = "`t$($OSDVariableName);"
+                                                      
+                                            [Void]$WMIInstanceDefinition.Append($WMIInstancePropertyName)
+                                            [Void]$WMIInstanceDefinition.AppendLine()
+                                                      
+                                            [Void]$MOFContents.Append($WMIPropertyDefinition)
+                                            [Void]$MOFContents.AppendLine()
+                                        }
+                                  
+                                    [Void]$MOFContents.Append("};")
                                           
-                                          [Void]$MOFContents.AppendLine()
-                                          [Void]$MOFContents.AppendLine()
+                                    [Void]$MOFContents.AppendLine()
+                                    [Void]$MOFContents.AppendLine()
                                           
-                                          [String]$WMIInstanceDefinitionHeader = @"
+                                    [String]$WMIInstanceDefinitionHeader = @"
 // Instance definition
 
 [DYNPROPS]
@@ -613,89 +570,101 @@ instance of $($Class)
 	InstanceKey = "@";
 
 "@
-                                          [Void]$MOFContents.AppendLine()
-                                          [Void]$MOFContents.Append($WMIInstanceDefinitionHeader)
-                                          [Void]$MOFContents.AppendLine()
+                                    [Void]$MOFContents.AppendLine()
+                                    [Void]$MOFContents.Append($WMIInstanceDefinitionHeader)
+                                    [Void]$MOFContents.AppendLine()
                                           
-                                          ForEach ($CreatedRegistryObject In $CreatedRegistryObjects)
-                                            {
-                                                $WMIInstancePropertyContext = "`t[PropertyContext(`"$($CreatedRegistryObject.KeyPath_WMIMOF)`"), Dynamic, Provider(`"RegPropProv`")]"
-                                                [Void]$MOFContents.Append($WMIInstancePropertyContext)
-                                                [Void]$MOFContents.AppendLine()
-                                                [Void]$MOFContents.Append("`t$($CreatedRegistryObject.ValueName);")
-                                                [Void]$MOFContents.AppendLine()
-                                                [Void]$MOFContents.AppendLine() 
-                                            }
-
-                                          [Void]$MOFContents.Append("};")
+                                    [Void]$MOFContents.Append($WMIInstanceDefinition.ToString())
+                                                                                    
+                                    [Void]$MOFContents.Append("};")
                                           
-                                          [Void]$MOFContents.AppendLine()   
-                                      }
-#endregion                                    
-                              
+                                    [Void]$MOFContents.AppendLine()
+                                    
 #region Export dynamically created MOF
-                                          [System.IO.FileInfo]$MOFExportPath = "$([System.Environment]::SystemDirectory)\wbem\$($ScriptPath.BaseName).mof"
+                                    [System.IO.FileInfo]$MOFExportPath = "$([System.Environment]::SystemDirectory)\wbem\$($ScriptPath.BaseName).mof"
 
-                                          $LogMessage = "####################Begin MOF File Contents####################`r`n$($MOFContents.ToString())`r`n####################End MOF File Contents####################`r`n`r`n"
-                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                    $LogMessage = "####################Begin MOF File Contents####################`r`n$($MOFContents.ToString())`r`n####################End MOF File Contents####################`r`n`r`n"
+                                    Write-Verbose -Message "$($LogMessage)" -Verbose
 
-                                          If ($MOFExportPath.Directory.Exists -eq $False) {[Void][System.IO.Directory]::CreateDirectory($MOFExportPath.Directory.FullName)}
+                                    If ($MOFExportPath.Directory.Exists -eq $False) {[Void][System.IO.Directory]::CreateDirectory($MOFExportPath.Directory.FullName)}
                                           
-                                          $MOFContents.ToString() | Out-File -FilePath "$($MOFExportPath.FullName)" -Encoding ASCII -NoNewline -Force -Verbose
+                                    $MOFContents.ToString() | Out-File -FilePath "$($MOFExportPath.FullName)" -Encoding ASCII -NoNewline -Force -Verbose
 #endregion
 
 #region Import dynamically created MOF into WMI using MofComp
-                                          [System.IO.FileInfo]$BinaryPath = "$([System.Environment]::SystemDirectory)\wbem\mofcomp.exe"
-                                          [String]$BinaryParameters = "-AutoRecover `"$($MOFExportPath.FullName)`""
-                                          [System.IO.FileInfo]$BinaryStandardOutputPath = "$($LogDir.FullName)\$($BinaryPath.BaseName)_StandardOutput.log"
-                                          [System.IO.FileInfo]$BinaryStandardErrorPath = "$($LogDir.FullName)\$($BinaryPath.BaseName)_StandardError.log"
+                                    [System.IO.FileInfo]$BinaryPath = "$([System.Environment]::SystemDirectory)\wbem\mofcomp.exe"
+                                    [String]$BinaryParameters = "-AutoRecover `"$($MOFExportPath.FullName)`""
+                                    [System.IO.FileInfo]$BinaryStandardOutputPath = "$($LogDir.FullName)\$($BinaryPath.BaseName)_StandardOutput.log"
+                                    [System.IO.FileInfo]$BinaryStandardErrorPath = "$($LogDir.FullName)\$($BinaryPath.BaseName)_StandardError.log"
                                             
-                                          If ($BinaryPath.Exists -eq $True)
+                                    If ($BinaryPath.Exists -eq $True)
+                                      {
+                                          $LogMessage = "Attempting to import the dynamically created MOF file. Please Wait... - [$($MOFExportPath.Name)]"
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                        
+                                          $LogMessage = "Binary Path - [$($BinaryPath.FullName)]"
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+
+                                          $LogMessage = "Binary Parameters - [$($BinaryParameters)]"
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                            
+                                          $LogMessage = "Binary Standard Output Path - [$($BinaryStandardOutputPath.FullName)]"
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                            
+                                          $LogMessage = "Binary Standard Error Path - [$($BinaryStandardErrorPath.FullName)]"
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                            
+                                          $ExecuteBinary = Start-Process -FilePath "$($BinaryPath.FullName)" -ArgumentList "$($BinaryParameters)" -WindowStyle Hidden -Wait -RedirectStandardOutput "$($BinaryStandardOutputPath.FullName)" -RedirectStandardError "$($BinaryStandardErrorPath.FullName)" -PassThru
+                            
+                                          [Int[]]$AcceptableExitCodes = @('0', '3010')
+                        
+                                          If ($ExecuteBinary.ExitCode -iin $AcceptableExitCodes)
                                             {
-                                                $LogMessage = "Attempting to import the dynamically created MOF file. Please Wait... - [$($MOFExportPath.Name)]"
+                                                $LogMessage = "Binary Execution Success - [Exit Code: $($ExecuteBinary.ExitCode.ToString())]"
                                                 Write-Verbose -Message "$($LogMessage)" -Verbose
-                        
-                                                $LogMessage = "Binary Path - [$($BinaryPath.FullName)]"
-                                                Write-Verbose -Message "$($LogMessage)" -Verbose
-
-                                                $LogMessage = "Binary Parameters - [$($BinaryParameters)]"
-                                                Write-Verbose -Message "$($LogMessage)" -Verbose
-                            
-                                                $LogMessage = "Binary Standard Output Path - [$($BinaryStandardOutputPath.FullName)]"
-                                                Write-Verbose -Message "$($LogMessage)" -Verbose
-                            
-                                                $LogMessage = "Binary Standard Error Path - [$($BinaryStandardErrorPath.FullName)]"
-                                                Write-Verbose -Message "$($LogMessage)" -Verbose
-                            
-                                                $ExecuteBinary = Start-Process -FilePath "$($BinaryPath.FullName)" -ArgumentList "$($BinaryParameters)" -WindowStyle Hidden -Wait -RedirectStandardOutput "$($BinaryStandardOutputPath.FullName)" -RedirectStandardError "$($BinaryStandardErrorPath.FullName)" -PassThru
-                            
-                                                [Int[]]$AcceptableExitCodes = @('0', '3010')
-                        
-                                                If ($ExecuteBinary.ExitCode -iin $AcceptableExitCodes)
-                                                  {
-                                                      $LogMessage = "Binary Execution Success - [Exit Code: $($ExecuteBinary.ExitCode.ToString())]"
-                                                      Write-Verbose -Message "$($LogMessage)" -Verbose
                                                       
-                                                      $BinaryStandardOutput = Get-Content -Path "$($BinaryStandardOutputPath.FullName)" -Raw -Force
+                                                $BinaryStandardOutput = Get-Content -Path "$($BinaryStandardOutputPath.FullName)" -Raw -Force
                                                   
-                                                      $LogMessage = "Binary Standard Output - [$($BinaryPath.Name)]`r`n$($BinaryStandardOutput.ToString())"
-                                                      Write-Verbose -Message "$($LogMessage)" -Verbose
-                                                  }
-                                                Else
-                                                  {
-                                                      $ErrorMessage = "Binary Execution Error - [Exit Code: $($ExecuteBinary.ExitCode.ToString())]"
-                                                      Write-Error -Message "$($ErrorMessage)" -Verbose
-                                                      
-                                                      $BinaryErrorOutput = Get-Content -Path "$($BinaryStandardErrorPath.FullName)" -Raw -Force
-                                                  
-                                                      $ErrorMessage = "Binary Error Output - [$($BinaryPath.Name)]`r`n$($BinaryErrorOutput.ToString())"
-                                                      Write-Error -Message "$($ErrorMessage)" -Verbose
-                                                  }
+                                                $LogMessage = "Binary Standard Output - [$($BinaryPath.Name)]`r`n$($BinaryStandardOutput.ToString())"
+                                                Write-Verbose -Message "$($LogMessage)" -Verbose
                                             }
+                                          Else
+                                            {
+                                                $ErrorMessage = "Binary Execution Error - [Exit Code: $($ExecuteBinary.ExitCode.ToString())]"
+                                                Write-Error -Message "$($ErrorMessage)" -Verbose
+                                                      
+                                                $BinaryErrorOutput = Get-Content -Path "$($BinaryStandardErrorPath.FullName)" -Raw -Force
+                                                  
+                                                $ErrorMessage = "Binary Error Output - [$($BinaryPath.Name)]`r`n$($BinaryErrorOutput.ToString())"
+                                                Write-Error -Message "$($ErrorMessage)" -Verbose
+                                            }
+                                      }
 
-                                          Write-Output -InputObject (Get-WMIObject -NameSpace "$($Namespace)" -Class "$($Class)")
+                                    #Show the WMI class BEFORE the properties get their values assigned
+                                      Write-Output -InputObject (Get-WMIObject -NameSpace ($Namespace) -Class ($Class))
+
+                                    #Retrieve the newly created WMI class and set the values of each property
+                                      $CIMInstance = Get-CIMInstance -Namespace ($Namespace) -ClassName ($Class)
+                                    
+                                      $CIMInstanceProperties = $CIMInstance.CimInstanceProperties | Where-Object {($_.Name -iin ($OSDVariables.Name))}
+                                    
+                                      ForEach ($CIMInstanceProperty In $CIMInstanceProperties)
+                                        {
+                                            $CIMInstancePropertyName = $CIMInstanceProperty.Name
+                                            
+                                            $OSDVariableProperties = $OSDVariables | Where-Object {($_.Name -ieq $CIMInstancePropertyName)}
+                                            
+                                            $LogMessage = "Attempting to assign the WMI property value for `"$($CIMInstancePropertyName)`". Please Wait... | [Namespace: $($Namespace)] - [Class: $($Class)]"
+                                            Write-Verbose -Message "$($LogMessage)" -Verbose                                     
+                                            
+                                            Set-CIMInstance -InputObject ($CIMInstance) -Property @{"$($CIMInstancePropertyName)" = ($OSDVariableProperties.Value)}
+                                        }
+
+                                    #Show the WMI class AFTER the properties get their values assigned
+                                      Write-Output -InputObject (Get-WMIObject -NameSpace ($Namespace) -Class ($Class))
+#endregion  
+                              }
 #endregion
-                                      }   
                       }
                     Else
                       {
