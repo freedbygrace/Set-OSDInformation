@@ -35,6 +35,10 @@
     .PARAMETER DestinationTimeZoneID
     A valid string. Specify a time zone ID that exists on the current system. Input will be validated against the list of time zones available on the system.
     All date/time operations within this script will converted the current system time to the destination timezone for standardization. That time will then be converted to UTC. The UTC time will then be converted to the WMI format and stored.
+
+    .PARAMETER FinalConversionTimeZoneID
+    A valid string. Specify a time zone ID that exists on the current system. Input will be validated against the list of time zones available on the system.
+    All date/time operations within this script will convert the timestamps to the final conversion timezone ID. UTC by default.
     
     .PARAMETER LogDir
     A valid folder path. If the folder does not exist, it will be created. This parameter can also be specified by the alias "LogPath".
@@ -52,7 +56,7 @@
     powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -File "%FolderPathContainingScript%\Set-OSDInformation.ps1" -Registry -RegistryKeyPath "HKLM:\Software\Microsoft\Deployment\CustomOSDInfo" -OSDVariablePrefix "CustomOSDInfo_" -LogDir "%_SMSTSLogPath%\Set-OSDInformation"
   
     .NOTES
-    Additional function(s) are required and will be imported automatically for this script to function properly. Look inside the "%ScriptDirectory%\Functions\Active" folder.
+    Additional function(s) are required and will be imported automatically for this script to function properly. Look inside the "%ScriptDirectory%\Functions" folder.
     When the values get written to WMI, the attribute prefix will be removed automatically so that the value(s) in the registry or WMI will not have that prefix and be easier to read.
     Create an SCCM package (the legacy kind) that points to the folder containing all file(s)/folder(s) included with this script and simply reference that package during the task sequence by using the "Run Powershell Script" action.
     All Date/Time values can be converted to the traditional Date/Time format from the WMI Date/Time format by using the following command ([System.Management.ManagementDateTimeConverter]::ToDateTime("YourDateAndTime")). They were placed in this format to allow data sorting and conversion once the data is inventoried, which would not be possible by just using strings.
@@ -82,6 +86,7 @@
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
             [ValidateScript({($_ -imatch '^HKLM|^HKCU|^HKCR|^HKU|^HKCC|^HKPD\:\\.*$')})]
+            [Alias('RKP')]
             [String]$RegistryKeyPath = "HKLM:\Software\Microsoft\Deployment\CustomOSDInfo",
 
             [Parameter(Mandatory=$False)]
@@ -90,6 +95,7 @@
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
             [ValidateScript({($_ -imatch '^Root\\.*')})]
+            [Alias('NS')]
             [String]$Namespace = "Root\CIMv2",
 
             [Parameter(Mandatory=$False)]
@@ -103,12 +109,20 @@
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
             [ValidateScript({($_ -imatch '^.*\_$')})]
+            [Alias('OSDVP')]
             [String]$OSDVariablePrefix = "CustomOSDInfo_",
             
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
             [ValidateScript({($_ -iin ([System.TimeZoneInfo]::GetSystemTimeZones().ID | Sort-Object))})]
+            [Alias('DTZID')]
             [String]$DestinationTimeZoneID = "Eastern Standard Time",
+
+            [Parameter(Mandatory=$False)]
+            [ValidateNotNullOrEmpty()]
+            [ValidateScript({($_ -iin ([System.TimeZoneInfo]::GetSystemTimeZones().ID | Sort-Object))})]
+            [Alias('FCTZID')]
+            [String]$FinalConversionTimeZoneID = "UTC",
             
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
@@ -256,6 +270,11 @@ ForEach ($ModuleGroup In $ModuleGroups)
         #Tasks defined within this block will only execute if a task sequence is running
           If (($IsRunningTaskSequence -eq $True))
             {            
+                  #Determine the specified time zone properties
+                    $OriginalTimeZone = Get-TimeZone
+                    $DestinationTimeZone = Get-TimeZone -ID "$($DestinationTimeZoneID)"
+                    $FinalConversionTimeZone = Get-TimeZone -ID "$($FinalConversionTimeZoneID)"
+                  
                   #Load any required assemblies
                     [Void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.VisualBasic")
             
@@ -334,46 +353,69 @@ ForEach ($ModuleGroup In $ModuleGroups)
                                 {
                                     {($_ -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
                                       {
-                                          $DefaultOSDVariableValueAsDateTime = Get-Date -Date "$($DefaultOSDVariableValue)"
-                                          $ConvertedDefaultOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($DefaultOSDVariableValueAsDateTime), ($DestinationTimeZoneID))
-                                          $ConvertedDefaultOSDVariableDateTimeUTC = $ConvertedDefaultOSDVariableDateTime.ToUniversalTime()
-                                          $DefaultOSDVariableValueConverted = $ConvertedDefaultOSDVariableDateTimeUTC
+                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [DateTime] type. Please Wait..."
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                          
+                                          [DateTime]$DefaultOSDVariableValueAsDateTime = Get-Date -Date "$($DefaultOSDVariableValue)"
+                                          [DateTime]$ConvertedDefaultOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($DefaultOSDVariableValueAsDateTime), ($DestinationTimeZone.ID))
+                                          [DateTime]$ConvertedDefaultOSDVariableDateTimeFinal = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($ConvertedDefaultOSDVariableDateTime), ($FinalConversionTimeZone.ID))
+                                          [DateTime]$DefaultOSDVariableValueConverted = $ConvertedDefaultOSDVariableDateTimeFinal
                                       }
                           
                                     {($DefaultOSDVariableValue -imatch "^True$|^False$")}
                                       {
+                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                          
                                           $DefaultOSDVariableValueConverted = [Boolean]::Parse($DefaultOSDVariableValue)
                                       }
                                                     
                                     {($DefaultOSDVariableValue -imatch "^Yes$")}
                                       {
+                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                          
                                           $DefaultOSDVariableValueConverted = [Boolean]::Parse("True")
                                       }
                                                     
                                     {($DefaultOSDVariableValue -imatch "^No$")}
                                       {
+                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                          
                                           $DefaultOSDVariableValueConverted = [Boolean]::Parse("False")
                                       }
                                       
                                     {([Microsoft.VisualBasic.Information]::IsNumeric($DefaultOSDVariableValue))}
                                       {
+                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                          
                                           $DefaultOSDVariableValueConverted = [Double]::Parse($DefaultOSDVariableValue)
                                       }
                                       
                                     {($_ -imatch '^_SMSTSTaskSequence$') -and ($IsConfigurationManagerTaskSequence -eq $True)}
                                       {
+                                          $LogMessage = "Attempting to retrieve the `"ImagePackageID`" from the `"$($_)`" task sequence variable. Please Wait..."
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                          
                                           $TaskSequenceXMLDefinition_ImagePackageID = @(Select-Xml -Content ($DefaultOSDVariableValue) -XPath "//variable[@name='ImagePackageID']")
                                           
                                           $DefaultOSDVariableValueConverted = "$($TaskSequenceXMLDefinition_ImagePackageID[0].Node.InnerText)"
                                           
                                           If ([String]::IsNullOrEmpty($DefaultOSDVariableValueConverted) -eq $False)
                                             {
+
+                                                
                                                 $DefaultOSDVariables += (Set-Variable -Name "ImagePackageID" -Value ($DefaultOSDVariableValueConverted) -PassThru -Force -Verbose)
                                             }
                                       }
                           
                                     Default
                                       {
+                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [String] type. Please Wait..."
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                          
                                           $DefaultOSDVariableValueConverted = [String]::New($DefaultOSDVariableValue)
                                       }    
                                 }
@@ -409,34 +451,52 @@ ForEach ($ModuleGroup In $ModuleGroups)
                               {
                                   {($_ -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
                                     {
-                                          $CustomOSDVariableValueAsDateTime = Get-Date -Date "$($CustomOSDVariableValue)"
-                                          $ConvertedCustomOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($CustomOSDVariableValueAsDateTime), ($DestinationTimeZoneID))
-                                          $ConvertedCustomOSDVariableDateTimeUTC = $ConvertedCustomOSDVariableDateTime.ToUniversalTime()
-                                          $CustomOSDVariableValueConverted = $ConvertedCustomOSDVariableDateTimeUTC
+                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [DateTime] type. Please Wait..."
+                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                          
+                                          [DateTime]$CustomOSDVariableValueAsDateTime = Get-Date -Date "$($CustomOSDVariableValue)"
+                                          [DateTime]$ConvertedCustomOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($CustomOSDVariableValueAsDateTime), ($DestinationTimeZone.ID))
+                                          [DateTime]$ConvertedCustomOSDVariableDateTimeFinal = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($ConvertedCustomOSDVariableDateTime), ($FinalConversionTimeZone.ID))
+                                          [DateTime]$CustomOSDVariableValueConverted = $ConvertedCustomOSDVariableDateTimeFinal
                                     }
                                                                         
                                   {($CustomOSDVariableValue -imatch "^True$|^False$")}
                                     {
+                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
+                                        Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
                                         $CustomOSDVariableValueConverted = [Boolean]::Parse($CustomOSDVariableValue)
                                     }
                                                     
                                   {($CustomOSDVariableValue -imatch "^Yes$")}
                                     {
+                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
+                                        Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
                                         $CustomOSDVariableValueConverted = [Boolean]::Parse("True")
                                     }
                                                     
                                   {($CustomOSDVariableValue -imatch "^No$")}
                                     {
+                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
+                                        Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
                                         $CustomOSDVariableValueConverted = [Boolean]::Parse("False")
                                     }
                                     
                                   {([Microsoft.VisualBasic.Information]::IsNumeric($CustomOSDVariableValue))}
                                     {
+                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Double] type. Please Wait..."
+                                        Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
                                         $CustomOSDVariableValueConverted = [Double]::Parse($CustomOSDVariableValue)
                                     }
                        
                                   Default
                                     {
+                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [String] type. Please Wait..."
+                                        Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
                                         $CustomOSDVariableValueConverted = [String]::New($CustomOSDVariableValue)
                                     }     
                               }
