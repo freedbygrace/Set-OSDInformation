@@ -2,14 +2,14 @@
 
 <#
     .SYNOPSIS
-    Records the requested deployment information into the system during operating system deployment (OSD).
+    Records the requested deployment information into the registry and/or WMI during operating system deployment (OSD).
           
     .DESCRIPTION
     This script will add build, task sequence, and other information to the operating system so that it can later be examined or inventoried. That data can then be used as the driving force behind SCCM collections, and or SCCM reports.
     Information can be added to the registry, WMI, or both.
           
     .PARAMETER Registry
-    Records the requested deployment information into the registry for later examination or usage.
+    Records the requested deployment information into the registry for later examination, collection into hardware inventory, or referencing the data within other scripts.
 
     .PARAMETER RegistryKeyPath
     Specifies the registry key path where the requested deployment information will be recorded when the registry parameter is specified. Input will be validated by a regular expression that forces the specified path to start with a registry hive location, followed by a colon, a backslash, and finally the path you want after that.
@@ -50,10 +50,10 @@
     powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -File "%FolderPathContainingScript%\Set-OSDInformation.ps1"
 
     .EXAMPLE
-    powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -File "%FolderPathContainingScript%\Set-OSDInformation.ps1" -WMI -Namespace "Root\CIMv2" -Class "Custom_OSD_Info" -OSDVariablePrefix "CustomOSDInfo_" -LogDir "%_SMSTSLogPath%\Set-OSDInformation"
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -File "%FolderPathContainingScript%\Set-OSDInformation.ps1" -WMI -Namespace "Root\CIMv2\OSD" -Class "OSDInfo" -OSDVariablePrefix "XOSDInfo_" -LogDir "%_SMSTSLogPath%\Set-OSDInformation"
 
     .EXAMPLE
-    powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -File "%FolderPathContainingScript%\Set-OSDInformation.ps1" -Registry -RegistryKeyPath "HKLM:\Software\Microsoft\Deployment\CustomOSDInfo" -OSDVariablePrefix "CustomOSDInfo_" -LogDir "%_SMSTSLogPath%\Set-OSDInformation"
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -File "%FolderPathContainingScript%\Set-OSDInformation.ps1" -Registry -RegistryKeyPath "HKLM:\Software\Microsoft\Deployment\OSDInfo" -OSDVariablePrefix "CustomOSDInfo_" -LogDir "%_SMSTSLogPath%\Set-OSDInformation"
   
     .NOTES
     Additional function(s) are required and will be imported automatically for this script to function properly. Look inside the "%ScriptDirectory%\Functions" folder.
@@ -87,7 +87,7 @@
             [ValidateNotNullOrEmpty()]
             [ValidateScript({($_ -imatch '^HKLM|^HKCU|^HKCR|^HKU|^HKCC|^HKPD\:\\.*$')})]
             [Alias('RKP')]
-            [String]$RegistryKeyPath = "HKLM:\Software\Microsoft\Deployment\CustomOSDInfo",
+            [String]$RegistryKeyPath = "HKLM:\Software\Microsoft\Deployment\OSDInfo",
 
             [Parameter(Mandatory=$False)]
             [Switch]$WMI,
@@ -96,11 +96,11 @@
             [ValidateNotNullOrEmpty()]
             [ValidateScript({($_ -imatch '^Root\\.*')})]
             [Alias('NS')]
-            [String]$Namespace = "Root\CIMv2",
+            [String]$Namespace = "Root\CIMv2\OSD",
 
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
-            [String]$Class = "Custom_OSD_Info",
+            [String]$Class = "OSDInfo",
             
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
@@ -108,9 +108,9 @@
 
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
-            [ValidateScript({($_ -imatch '^.*\_$')})]
+            [ValidateScript({($_ -imatch '^.*_$')})]
             [Alias('OSDVP')]
-            [String]$OSDVariablePrefix = "CustomOSDInfo_",
+            [String]$OSDVariablePrefix = "XOSDInfo_",
             
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
@@ -126,9 +126,9 @@
             
             [Parameter(Mandatory=$False)]
             [ValidateNotNullOrEmpty()]
-            [ValidateScript({($_ -imatch '^[a-zA-Z][\:]\\.*?[^\\]$')})]
+            [ValidateScript({($_ -imatch '^[a-zA-Z][\:]\\.*?[^\\]$') -or ($_ -imatch "^\\(?:\\[^<>:`"/\\|?*]+)+$")})]
             [Alias('LogPath')]
-            [System.IO.DirectoryInfo]$LogDir = "$($Env:Windir)\Logs\Software\Set-OSDInformation",
+            [System.IO.DirectoryInfo]$LogDir,
             
             [Parameter(Mandatory=$False)]
             [Switch]$ContinueOnError
@@ -156,7 +156,6 @@
   $DateTimeFileFormat = 'yyyyMMdd_hhmmsstt'  ###20190403_115354AM###
   [ScriptBlock]$GetCurrentDateTimeFileFormat = {(Get-Date).ToString($DateTimeFileFormat)}
   [System.IO.FileInfo]$ScriptPath = "$($MyInvocation.MyCommand.Definition)"
-  [System.IO.FileInfo]$ScriptLogPath = "$($LogDir.FullName)\$($ScriptPath.BaseName)_$($GetCurrentDateTimeFileFormat.Invoke()).log"
   [System.IO.DirectoryInfo]$ScriptDirectory = "$($ScriptPath.Directory.FullName)"
   [System.IO.DirectoryInfo]$FunctionsDirectory = "$($ScriptDirectory.FullName)\Functions"
   [System.IO.DirectoryInfo]$ModulesDirectory = "$($ScriptDirectory.FullName)\Modules"
@@ -178,10 +177,35 @@
         $IsRunningTaskSequence = $False
     }
 
+#Determine the default logging path if the parameter is not specified and is not assigned a default value
+  If (($PSBoundParameters.ContainsKey('LogDir') -eq $False) -and ($LogDir -ieq $Null))
+    {
+        If ($IsRunningTaskSequence -eq $True)
+          {
+              [String]$_SMSTSLogPath = "$($TSEnvironment.Value('_SMSTSLogPath'))"
+                    
+              If ([String]::IsNullOrEmpty($_SMSTSLogPath) -eq $False)
+                {
+                    [System.IO.DirectoryInfo]$TSLogDirectory = "$($_SMSTSLogPath)"
+                }
+              Else
+                {
+                    [System.IO.DirectoryInfo]$TSLogDirectory = "$($Env:Windir)\Temp\SMSTSLog"
+                }
+                     
+              [System.IO.DirectoryInfo]$LogDir = "$($TSLogDirectory.FullName)\$($ScriptPath.BaseName)"
+          }
+        ElseIf ($IsRunningTaskSequence -eq $False)
+          {
+              [System.IO.DirectoryInfo]$LogDir = "$($Env:Windir)\Logs\Software\$($ScriptPath.BaseName)"
+          }
+    }
+
 #Start transcripting (Logging)
   Try
     {
-        If ($LogDir.Exists -eq $False) {[Void][System.IO.Directory]::CreateDirectory($LogDir.FullName)}
+        [System.IO.FileInfo]$ScriptLogPath = "$($LogDir.FullName)\$($ScriptPath.BaseName)_$($GetCurrentDateTimeFileFormat.Invoke()).log"
+        If ($ScriptLogPath.Directory.Exists -eq $False) {[Void][System.IO.Directory]::CreateDirectory($ScriptLogPath.Directory.FullName)}
         Start-Transcript -Path "$($ScriptLogPath.FullName)" -IncludeInvocationHeader -Force -Verbose
     }
   Catch
@@ -270,6 +294,23 @@ ForEach ($ModuleGroup In $ModuleGroups)
         #Tasks defined within this block will only execute if a task sequence is running
           If (($IsRunningTaskSequence -eq $True))
             {            
+                  #Gather any additional details about the system
+                    If ($IsWindowsPE -eq $False)
+                      {
+                          $OperatingSystemDetails = Get-Item -Path "HKLM:\Software\Microsoft\Windows NT\CurrentVersion"
+                          [String]$OperatingSystemReleaseID = $OperatingSystemDetails.GetValue('ReleaseID')
+                          [String]$OperatingSystemUBR = $OperatingSystemDetails.GetValue('UBR')
+                          
+                          If ([String]::IsNullOrEmpty($OperatingSystemUBR) -eq $False)
+                            {
+                                $OperatingSystemImageVersion = "$($OperatingSystem.Version).$($OperatingSystemUBR)"
+                            }
+                          Else
+                            {
+                                $OperatingSystemImageVersion = "$($OperatingSystem.Version)"
+                            }
+                      }
+                  
                   #Determine the specified time zone properties
                     $OriginalTimeZone = Get-TimeZone
                     $DestinationTimeZone = Get-TimeZone -ID "$($DestinationTimeZoneID)"
@@ -279,10 +320,10 @@ ForEach ($ModuleGroup In $ModuleGroups)
                     [Void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.VisualBasic")
             
                   #Create an empty array to store the combined/final set of OSD variable(s)
-                    $OSDVariables = @()
+                    [System.Collections.ArrayList]$OSDVariables = @()
                   
                   #Create an empty array to store the default OSD variable(s)
-                    $DefaultOSDVariables = @()
+                    [System.Collections.ArrayList]$DefaultOSDVariables = @()
                   
                   #Determine if we are running within a Microsoft Deployment Toolkit or Configuration Manager task sequence based on the "_SMSTSPackageID" task sequence variable. This will only be populated within Configuration Manager task sequences, which allows for the comparison.
                     [Boolean]$IsConfigurationManagerTaskSequence = [String]::IsNullOrEmpty($TSEnvironment.Value("_SMSTSPackageID")) -eq $False
@@ -300,18 +341,71 @@ ForEach ($ModuleGroup In $ModuleGroups)
                                                                   "_SMSTSSiteCode",
                                                                   "_SMSTSLaunchMode",
                                                                   "_SMSTSUserStarted",
-                                                                  "OSBuildVersion",
                                                                   "_SMSTSBootUEFI",
-                                                                  "SMSDP",
                                                                   "_SMSTSAdvertID",
-                                                                  "DeploymentMethod",
-                                                                  "_SMSTSTaskSequence"
-                                                              )
+                                                                  "_SMSTSMP",
+                                                                  "_SMSTSType",
+                                                                  "SMSTSPeerDownload",
+                                                                  "SMSTSPersistContent",
+                                                                  "SMSTSPreserveContent"
+                                                                  "IPAddress001",
+                                                                  "IPAddress002",
+                                                                  "MACAddress001",
+                                                                  "DefaultGateway001"
+                                                               )
+
+                          #Retrieve the image package ID so that we can know which image was deployed with the task sequence
+                            $LogMessage = "Attempting to retrieve the `"ImagePackageID`" from the `"_SMSTSTaskSequence`" task sequence variable. Please Wait..."
+                            Write-Verbose -Message "$($LogMessage)" -Verbose
+
+                            $_SMSTSTaskSequence = $TSEnvironment.Value('_SMSTSTaskSequence')
+
+                            Try {$TaskSequenceXMLDefinition_GetImagePackageID = @(Select-Xml -Content ($_SMSTSTaskSequence) -XPath "//variable[@name='ImagePackageID']")} Catch {$TaskSequenceXMLDefinition_GetImagePackageID = $Null}
+
+                            If ($TaskSequenceXMLDefinition_GetImagePackageID -ine $Null)
+                              {
+                                  [String]$TaskSequenceXMLDefinition_ImagePackageID = $TaskSequenceXMLDefinition_GetImagePackageID[0].Node.InnerText
+                              }
+                            ElseIf ($TaskSequenceXMLDefinition_GetImagePackageID -ieq $Null)
+                              {
+                                  [String]$TaskSequenceXMLDefinition_ImagePackageID = $Null
+                              }
+                            
+                            $DefaultOSDVariables += (Set-Variable -Name "ImagePackageID" -Value ($TaskSequenceXMLDefinition_ImagePackageID) -PassThru -Force -Verbose)
+
+                          #Retrieve the last content download location and remove all other text except the server name
+                            $LogMessage = "Attempting to retrieve the value of the `"_SMSTSLastContentDownloadLocation`" task sequence variable. Please Wait..."
+                            Write-Verbose -Message "$($LogMessage)" -Verbose
+
+                            $_SMSTSLastContentDownloadLocation = $TSEnvironment.Value('_SMSTSLastContentDownloadLocation')
+
+                            Try {[String]$_SMSTSLastContentDownloadLocation_Formatted = ($_SMSTSLastContentDownloadLocation -isplit "(https?\:\/\/.+[\:]\d{1,5})")[1].Trim()} Catch {[String]$_SMSTSLastContentDownloadLocation_Formatted = $Null}
+
+                            $DefaultOSDVariables += (Set-Variable -Name "SMSTSLastContentDownloadLocation" -Value ($_SMSTSLastContentDownloadLocation_Formatted) -PassThru -Force -Verbose)
                       }
                     ElseIf ($IsConfigurationManagerTaskSequence -eq $False)
                       {
                           [String]$DeploymentProduct = "MDT"
-                      
+                          
+                          [String[]]$Base64Variables = "UserDomain", "UserID"
+
+                          ForEach ($Base64Variable In $Base64Variables)
+                            {
+                                $Base64VariableValue = $TSEnvironment.Value($Base64Variable)
+
+                                If ([String]::IsNullOrEmpty($Base64VariableValue) -eq $False)
+                                  {
+                                      $DecodedBase64VariableValue = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Base64VariableValue))
+                                      $DecodedBase64VariableValue = $DecodedBase64VariableValue.ToUpper()
+                                  }
+                                Else
+                                  {
+                                      $DecodedBase64VariableValue = $Null
+                                  }
+
+                                $DefaultOSDVariables += (Set-Variable -Name "$($Base64Variable)" -Value ($DecodedBase64VariableValue) -PassThru -Force -Verbose)
+                            }
+                                                    
                           [String[]]$DefaultOSDVariableList = @(
                                                                   "_SMSTSBootUEFI",
                                                                   "SMSDP",
@@ -322,17 +416,24 @@ ForEach ($ModuleGroup In $ModuleGroups)
                                                                   "DeployRoot",
                                                                   "ImageIndex",
                                                                   "ImageFlags",
-                                                                  "ImageBuild",
                                                                   "WDSServer",
-                                                                  "TaskSequenceID"
-                                                              )
+                                                                  "TaskSequenceID",
+                                                                  "TaskSequenceName",
+                                                                  "IPAddress001",
+                                                                  "IPAddress002",
+                                                                  "MACAddress001"
+                                                               )
                       }
-                                                                                  
-                    #Always define a variable that details when the system was deployed. The timestamp is according to when this script calculated the current date/time which is converted to the destination time zone ID, then to UTC, then converted to the WMI format and stored.
-                      $DefaultOSDVariables += (Set-Variable -Name "DeploymentTimestamp" -Value ((Get-Process -ID $PID).StartTime) -PassThru -Force -Verbose)
-            
-                    #Always define a variable that details which product deployed the task sequence
+                                                                                              
+                    #Always define a variables that could only be retrieved via script
                       $DefaultOSDVariables += (Set-Variable -Name "DeploymentProduct" -Value ($DeploymentProduct) -PassThru -Force -Verbose)
+                      $DefaultOSDVariables += (Set-Variable -Name "OSImageVersion" -Value ($OperatingSystemImageVersion) -PassThru -Force -Verbose)
+                      $DefaultOSDVariables += (Set-Variable -Name "OSImageReleaseID" -Value ($OperatingSystemReleaseID) -PassThru -Force -Verbose)
+                      $DefaultOSDVariables += (Set-Variable -Name "ComputerName" -Value ($ComputerSystem.Name) -PassThru -Force -Verbose)
+                      $DefaultOSDVariables += (Set-Variable -Name "Manufacturer" -Value ($ComputerSystem.Manufacturer) -PassThru -Force -Verbose)
+                      $DefaultOSDVariables += (Set-Variable -Name "Model" -Value ($ComputerSystem.Model) -PassThru -Force -Verbose)
+                      $DefaultOSDVariables += (Set-Variable -Name "SystemID" -Value ($Baseboard.Product) -PassThru -Force -Verbose)
+                      $DefaultOSDVariables += (Set-Variable -Name "SerialNumber" -Value ($Bios.SerialNumber) -PassThru -Force -Verbose)
             
                     #Sort the default OSD variable list alphabetically and only return the unique value(s)
                       $DefaultOSDVariableListSorted = $DefaultOSDVariableList | Sort-Object -Unique
@@ -340,97 +441,105 @@ ForEach ($ModuleGroup In $ModuleGroups)
                     #Create a variable for each default variable specified
                       ForEach ($DefaultOSDVariable In $DefaultOSDVariableListSorted)
                         {
-                            $DefaultOSDVariableValueConverted = $Null
-                        
                             #Remove all instances of invalid character(s) from the variable name(s) using a regular expression. This is to avoid potential WMI property creation error(s).
                               $DefaultOSDVariableName = $DefaultOSDVariable -ireplace "(_)|(\s)|(\.)", ""
                               
                             #Retrieve the value of the task sequence variable
-                              $DefaultOSDVariableValue = $TSEnvironment.Value($DefaultOSDVariable) 
-                      
-                            #Attempt to retrieve data that can only be retrieved from within the xml definition of the task seqence, otherwise, by default, just retrieve the variable value from the task sequence com object
-                              Switch ($DefaultOSDVariable)
-                                {
-                                    {($_ -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
-                                      {
-                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [DateTime] type. Please Wait..."
-                                          Write-Verbose -Message "$($LogMessage)" -Verbose
-                                          
-                                          [DateTime]$DefaultOSDVariableValueAsDateTime = Get-Date -Date "$($DefaultOSDVariableValue)"
-                                          [DateTime]$ConvertedDefaultOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($DefaultOSDVariableValueAsDateTime), ($DestinationTimeZone.ID))
-                                          [DateTime]$ConvertedDefaultOSDVariableDateTimeFinal = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($ConvertedDefaultOSDVariableDateTime), ($FinalConversionTimeZone.ID))
-                                          [DateTime]$DefaultOSDVariableValueConverted = $ConvertedDefaultOSDVariableDateTimeFinal
-                                      }
-                          
-                                    {($DefaultOSDVariableValue -imatch "^True$|^False$")}
-                                      {
-                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
-                                          Write-Verbose -Message "$($LogMessage)" -Verbose
-                                          
-                                          $DefaultOSDVariableValueConverted = [Boolean]::Parse($DefaultOSDVariableValue)
-                                      }
-                                                    
-                                    {($DefaultOSDVariableValue -imatch "^Yes$")}
-                                      {
-                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
-                                          Write-Verbose -Message "$($LogMessage)" -Verbose
-                                          
-                                          $DefaultOSDVariableValueConverted = [Boolean]::Parse("True")
-                                      }
-                                                    
-                                    {($DefaultOSDVariableValue -imatch "^No$")}
-                                      {
-                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
-                                          Write-Verbose -Message "$($LogMessage)" -Verbose
-                                          
-                                          $DefaultOSDVariableValueConverted = [Boolean]::Parse("False")
-                                      }
-                                      
-                                    {([Microsoft.VisualBasic.Information]::IsNumeric($DefaultOSDVariableValue))}
-                                      {
-                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
-                                          Write-Verbose -Message "$($LogMessage)" -Verbose
-                                          
-                                          $DefaultOSDVariableValueConverted = [Double]::Parse($DefaultOSDVariableValue)
-                                      }
-                                      
-                                    {($_ -imatch '^_SMSTSTaskSequence$') -and ($IsConfigurationManagerTaskSequence -eq $True)}
-                                      {
-                                          $LogMessage = "Attempting to retrieve the `"ImagePackageID`" from the `"$($_)`" task sequence variable. Please Wait..."
-                                          Write-Verbose -Message "$($LogMessage)" -Verbose
-                                          
-                                          $TaskSequenceXMLDefinition_ImagePackageID = @(Select-Xml -Content ($DefaultOSDVariableValue) -XPath "//variable[@name='ImagePackageID']")
-                                          
-                                          $DefaultOSDVariableValueConverted = "$($TaskSequenceXMLDefinition_ImagePackageID[0].Node.InnerText)"
-                                          
-                                          If ([String]::IsNullOrEmpty($DefaultOSDVariableValueConverted) -eq $False)
-                                            {
+                              $DefaultOSDVariableValue = $TSEnvironment.Value($DefaultOSDVariable)
 
-                                                
-                                                $DefaultOSDVariables += (Set-Variable -Name "ImagePackageID" -Value ($DefaultOSDVariableValueConverted) -PassThru -Force -Verbose)
-                                            }
-                                      }
-                          
-                                    Default
-                                      {
-                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [String] type. Please Wait..."
-                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                            $LogMessage = "Now processing task sequence variable `"$($DefaultOSDVariable)`" with a value of `"$($DefaultOSDVariableValue)`". Please Wait..."
+                            Write-Verbose -Message "$($LogMessage)" -Verbose
+                            
+                            #Attempt to format any Default variable(s) to their respective data types. This is for data consistency purposes.
+                              [Boolean]$DefaultOSDVariableDataTypeFound = $False
+
+                              If ((([DateTime]::TryParse(($DefaultOSDVariableValue), [Ref](New-Object -TypeName 'DateTime')) -eq $True)) -and ($DefaultOSDVariableDataTypeFound -eq $False))
+                                {
+                                    $LogMessage = "Attempting to cast the task sequence variable `"$($DefaultOSDVariable)`" to a [DateTime] type. Please Wait..."
+                                    Write-Verbose -Message "$($LogMessage)" -Verbose
                                           
-                                          $DefaultOSDVariableValueConverted = [String]::New($DefaultOSDVariableValue)
-                                      }    
+                                    $ConvertDefaultOSDVariableValueToDateTime = Convert-Date -Date "$($DefaultOSDVariableValue)" -Verbose
+
+                                    If ($ConvertDefaultOSDVariableValueToDateTime.IsConvertable -eq $True)
+                                      {
+                                          $ConvertedDefaultOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($ConvertDefaultOSDVariableValueToDateTime.ConvertedDateTime), "$($DestinationTimeZone.ID)")
+                                          $ConvertedDefaultOSDVariableDateTimeFinal = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($ConvertedDefaultOSDVariableDateTime), "$($FinalConversionTimeZone.ID)")
+                                          $DefaultOSDVariableValueConverted = $ConvertedDefaultOSDVariableDateTimeFinal
+                                        
+                                          [Boolean]$DefaultOSDVariableDataTypeFound = $True
+                                      }
                                 }
-                                
-                            $DefaultOSDVariables += (Set-Variable -Name "$($DefaultOSDVariableName)" -Value ($DefaultOSDVariableValueConverted) -PassThru -Force -Verbose) 
+                                  
+                              If (($DefaultOSDVariableValue -imatch "^True$|^False$") -and ($DefaultOSDVariableDataTypeFound -eq $False))
+                                {
+                                    $LogMessage = "Attempting to cast the task sequence variable `"$($DefaultOSDVariable)`" to a [Boolean] type. Please Wait..."
+                                    Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                    $DefaultOSDVariableValueConverted = [Boolean]::Parse($DefaultOSDVariableValue)
+
+                                    [Boolean]$DefaultOSDVariableDataTypeFound = $True
+                                }
+
+                              If (($DefaultOSDVariableValue -imatch "^Yes$") -and ($DefaultOSDVariableDataTypeFound -eq $False))
+                                {
+                                    $LogMessage = "Attempting to cast the task sequence variable `"$($DefaultOSDVariable)`" to a [Boolean] type. Please Wait..."
+                                    Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                    $DefaultOSDVariableValueConverted = [Boolean]::Parse("True")
+
+                                    [Boolean]$DefaultOSDVariableDataTypeFound = $True
+                                }
+
+                              If (($DefaultOSDVariableValue -imatch "^No$") -and ($DefaultOSDVariableDataTypeFound -eq $False))
+                                {
+                                    $LogMessage = "Attempting to cast the task sequence variable `"$($DefaultOSDVariable)`" to a [Boolean] type. Please Wait..."
+                                    Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                    $DefaultOSDVariableValueConverted = [Boolean]::Parse("False")
+
+                                    [Boolean]$DefaultOSDVariableDataTypeFound = $True
+                                }
+
+                              If (([Microsoft.VisualBasic.Information]::IsNumeric($DefaultOSDVariableValue) -eq $True) -and ($DefaultOSDVariableDataTypeFound -eq $False))
+                                {
+                                    $LogMessage = "Attempting to cast the task sequence variable `"$($DefaultOSDVariable)`" to a [Double] type. Please Wait..."
+                                    Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                    $DefaultOSDVariableValueConverted = [Double]::Parse($DefaultOSDVariableValue)
+
+                                    [Boolean]$DefaultOSDVariableDataTypeFound = $True
+                                }
+
+                              If (($DefaultOSDVariableDataTypeFound -eq $False))
+                                {
+                                    $LogMessage = "Attempting to cast the task sequence variable `"$($DefaultOSDVariable)`" to a [String] type. Please Wait..."
+                                    Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                    If ([String]::IsNullOrEmpty($DefaultOSDVariableValue) -eq $False) {$DefaultOSDVariableValueConverted = [String]::New($DefaultOSDVariableValue)} Else {$DefaultOSDVariableValueConverted = $Null}
+
+                                    [Boolean]$DefaultOSDVariableDataTypeFound = $True
+                                }
+
+                              #Add the variable to the array if it was converted sucessfully, otherwise write a log entry for troubleshooting.
+                                If (($DefaultOSDVariableDataTypeFound -eq $True))
+                                  {
+                                      $DefaultOSDVariables += (Set-Variable -Name "$($DefaultOSDVariableName)" -Value ($DefaultOSDVariableValueConverted) -PassThru -Force -Verbose)
+                                  }
+                                ElseIf (($DefaultOSDVariableDataTypeFound -eq $False))
+                                  {
+                                      $WarningMessage = "Task sequence variable `"$($DefaultOSDVariable)`" with a value of `"$($DefaultOSDVariableValue)`" could not be converted. Skipping...`r`n`r`n[Error Message: $($_.Exception.Message)]"
+                                      Write-Warning -Message "$($WarningMessage)"
+                                  }
                         }
                     	                	
                   #Add the default OSD variables to the final variable array
                     $OSDVariables += ($DefaultOSDVariables)
                   
                   #Create an empty array to store the custom set of OSD variable(s)
-                    $CustomOSDVariables = @()
+                    [System.Collections.ArrayList]$CustomOSDVariables = @()
             
                   #Dynamically retrieve the additional task sequence variable(s) based on their prefix and add them to the information that will be written to either WMI, the registry, or both
-                    $RetrievedCustomOSDVariables = $TSEnvironment.GetVariables() | Where-Object {($_ -imatch "$($OSDVariablePrefix).*")}
+                    $RetrievedCustomOSDVariables = $TSEnvironment.GetVariables() | Where-Object {($_ -imatch "^$($OSDVariablePrefix).*")}
   
                   #Sort the custom OSD variable list alphabetically and only return the unique value(s)
                     $CustomOSDVariableListSorted = $RetrievedCustomOSDVariables | Sort-Object -Unique
@@ -438,70 +547,100 @@ ForEach ($ModuleGroup In $ModuleGroups)
                   #Create all the variable(s) that will be written to the system in the desired storage location
                     ForEach ($CustomOSDVariable In $CustomOSDVariableListSorted)
                       {
-                          $CustomOSDVariableValueConverted = $Null
-                      
                           #Remove the attribute prefix from the variable name(s). This is for cleaner output purposes.
                             $CustomOSDVariableName = $CustomOSDVariable -ireplace "$($OSDVariablePrefix)", ""
                             
+                          #Remove all instances of invalid character(s) from the variable name(s) using a regular expression. This is to avoid potential WMI property creation error(s).
+                            $CustomOSDVariableName = $CustomOSDVariableName -ireplace "(_)|(\s)|(\.)", ""
+                            
                           #Retrieve the value of the task sequence variable
                             $CustomOSDVariableValue = $TSEnvironment.Value($CustomOSDVariable)
+
+                          $LogMessage = "Now processing task sequence variable `"$($CustomOSDVariable)`" with a value of `"$($CustomOSDVariableValue)`". Please Wait..."
+                          Write-Verbose -Message "$($LogMessage)" -Verbose
                             
                           #Attempt to format any custom variable(s) to their respective data types. This is for data consistency purposes.
-                            Switch ($CustomOSDVariableName)
+                            [Boolean]$CustomOSDVariableDataTypeFound = $False
+
+                            If ((([DateTime]::TryParse(($CustomOSDVariableValue), [Ref](New-Object -TypeName 'DateTime')) -eq $True)) -and ($CustomOSDVariableDataTypeFound -eq $False))
                               {
-                                  {($_ -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
-                                    {
-                                          $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [DateTime] type. Please Wait..."
-                                          Write-Verbose -Message "$($LogMessage)" -Verbose
+                                  $LogMessage = "Attempting to cast the task sequence variable `"$($CustomOSDVariable)`" to a [DateTime] type. Please Wait..."
+                                  Write-Verbose -Message "$($LogMessage)" -Verbose
                                           
-                                          [DateTime]$CustomOSDVariableValueAsDateTime = Get-Date -Date "$($CustomOSDVariableValue)"
-                                          [DateTime]$ConvertedCustomOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($CustomOSDVariableValueAsDateTime), ($DestinationTimeZone.ID))
-                                          [DateTime]$ConvertedCustomOSDVariableDateTimeFinal = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($ConvertedCustomOSDVariableDateTime), ($FinalConversionTimeZone.ID))
-                                          [DateTime]$CustomOSDVariableValueConverted = $ConvertedCustomOSDVariableDateTimeFinal
-                                    }
-                                                                        
-                                  {($CustomOSDVariableValue -imatch "^True$|^False$")}
+                                  $ConvertCustomOSDVariableValueToDateTime = Convert-Date -Date "$($CustomOSDVariableValue)" -Verbose
+
+                                  If ($ConvertCustomOSDVariableValueToDateTime.IsConvertable -eq $True)
                                     {
-                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
-                                        Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        $ConvertedCustomOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($ConvertCustomOSDVariableValueToDateTime.ConvertedDateTime), "$($DestinationTimeZone.ID)")
+                                        $ConvertedCustomOSDVariableDateTimeFinal = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($ConvertedCustomOSDVariableDateTime), "$($FinalConversionTimeZone.ID)")
+                                        $CustomOSDVariableValueConverted = $ConvertedCustomOSDVariableDateTimeFinal
                                         
-                                        $CustomOSDVariableValueConverted = [Boolean]::Parse($CustomOSDVariableValue)
+                                        [Boolean]$CustomOSDVariableDataTypeFound = $True
                                     }
-                                                    
-                                  {($CustomOSDVariableValue -imatch "^Yes$")}
-                                    {
-                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
-                                        Write-Verbose -Message "$($LogMessage)" -Verbose
-                                        
-                                        $CustomOSDVariableValueConverted = [Boolean]::Parse("True")
-                                    }
-                                                    
-                                  {($CustomOSDVariableValue -imatch "^No$")}
-                                    {
-                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Boolean] type. Please Wait..."
-                                        Write-Verbose -Message "$($LogMessage)" -Verbose
-                                        
-                                        $CustomOSDVariableValueConverted = [Boolean]::Parse("False")
-                                    }
-                                    
-                                  {([Microsoft.VisualBasic.Information]::IsNumeric($CustomOSDVariableValue))}
-                                    {
-                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [Double] type. Please Wait..."
-                                        Write-Verbose -Message "$($LogMessage)" -Verbose
-                                        
-                                        $CustomOSDVariableValueConverted = [Double]::Parse($CustomOSDVariableValue)
-                                    }
-                       
-                                  Default
-                                    {
-                                        $LogMessage = "Attempting to cast the task sequence variable `"$($_)`" to a [String] type. Please Wait..."
-                                        Write-Verbose -Message "$($LogMessage)" -Verbose
-                                        
-                                        $CustomOSDVariableValueConverted = [String]::New($CustomOSDVariableValue)
-                                    }     
                               }
-                              
-                            $CustomOSDVariables += (Set-Variable -Name "$($CustomOSDVariableName)" -Value ($CustomOSDVariableValueConverted) -PassThru -Force -Verbose)
+                                  
+                            If (($CustomOSDVariableValue -imatch "^True$|^False$") -and ($CustomOSDVariableDataTypeFound -eq $False))
+                              {
+                                  $LogMessage = "Attempting to cast the task sequence variable `"$($CustomOSDVariable)`" to a [Boolean] type. Please Wait..."
+                                  Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                  $CustomOSDVariableValueConverted = [Boolean]::Parse($CustomOSDVariableValue)
+
+                                  [Boolean]$CustomOSDVariableDataTypeFound = $True
+                              }
+
+                            If (($CustomOSDVariableValue -imatch "^Yes$") -and ($CustomOSDVariableDataTypeFound -eq $False))
+                              {
+                                  $LogMessage = "Attempting to cast the task sequence variable `"$($CustomOSDVariable)`" to a [Boolean] type. Please Wait..."
+                                  Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                  $CustomOSDVariableValueConverted = [Boolean]::Parse("True")
+
+                                  [Boolean]$CustomOSDVariableDataTypeFound = $True
+                              }
+
+                            If (($CustomOSDVariableValue -imatch "^No$") -and ($CustomOSDVariableDataTypeFound -eq $False))
+                              {
+                                  $LogMessage = "Attempting to cast the task sequence variable `"$($CustomOSDVariable)`" to a [Boolean] type. Please Wait..."
+                                  Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                  $CustomOSDVariableValueConverted = [Boolean]::Parse("False")
+
+                                  [Boolean]$CustomOSDVariableDataTypeFound = $True
+                              }
+
+                            If (([Microsoft.VisualBasic.Information]::IsNumeric($CustomOSDVariableValue) -eq $True) -and ($CustomOSDVariableDataTypeFound -eq $False))
+                              {
+                                  $LogMessage = "Attempting to cast the task sequence variable `"$($CustomOSDVariable)`" to a [Double] type. Please Wait..."
+                                  Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                  $CustomOSDVariableValueConverted = [Double]::Parse($CustomOSDVariableValue)
+
+                                  [Boolean]$CustomOSDVariableDataTypeFound = $True
+                              }
+
+                            If (($CustomOSDVariableDataTypeFound -eq $False))
+                              {
+                                  $LogMessage = "Attempting to cast the task sequence variable `"$($CustomOSDVariable)`" to a [String] type. Please Wait..."
+                                  Write-Verbose -Message "$($LogMessage)" -Verbose
+                                        
+                                  If ([String]::IsNullOrEmpty($CustomOSDVariableValue) -eq $False) {$CustomOSDVariableValueConverted = [String]::New($CustomOSDVariableValue)} Else {$CustomOSDVariableValueConverted = $Null}
+
+                                  [Boolean]$CustomOSDVariableDataTypeFound = $True
+                              }
+
+                            #Add the variable to the array if it was converted sucessfully, otherwise write a log entry for troubleshooting.
+                              If (($CustomOSDVariableDataTypeFound -eq $True))
+                                {
+                                    $CustomOSDVariables += (Set-Variable -Name "$($CustomOSDVariableName)" -Value ($CustomOSDVariableValueConverted) -PassThru -Force -Verbose)
+                                }
+                              ElseIf (($CustomOSDVariableDataTypeFound -eq $False))
+                                {
+                                    $WarningMessage = "Task sequence variable `"$($CustomOSDVariable)`" with a value of `"$($CustomOSDVariableValue)`" could not be converted. Skipping..."
+                                    Write-Warning -Message "$($WarningMessage)"
+
+                                    Continue
+                                }
                       }
                       
                   #Attempt to automatically create a timespan between the OSD Start Time and OSD End Time (This will only occur if these custom variables exist) (This data will allow you to track how long a task sequence deployment took for a device)                    
@@ -540,7 +679,7 @@ ForEach ($ModuleGroup In $ModuleGroups)
                                     }
                               }
                               
-#region Dynamic MOF Creation
+              #region Dynamic MOF Creation
                           #If specified, write the OSD information to a new WMI class. The class will be removed and recreated if it exists! A MOF file will be dynamically generated and compiled using MOFCOMP with auto recovery in the event of WMI repository rebuilds. In other words, this custom WMI class will survive rebuilds of the WMI repository.
                             If ($WMI.IsPresent -eq $True)
                               {      
@@ -564,7 +703,7 @@ ForEach ($ModuleGroup In $ModuleGroups)
 class $($Class)
 {
 	[key]
-	string InstanceKey;
+	String InstanceKey;
 
 
 "@
@@ -575,36 +714,35 @@ class $($Class)
                                       ForEach ($OSDVariable In $OSDVariables)
                                         {
                                             [String]$OSDVariableName = $OSDVariable.Name
-                                          
-                                            [String]$OSDVariableType = "$($OSDVariable.Value.GetType().Name)"
-                                          
-                                            $OSDVariableValue = ($OSDVariable.Value -Join ", ").ToString().Trim()
-                                          
+                                                                                                                              
                                             #Attempt to specify data type before adding the property to the WMI class
                                             #Valid values are the following: None, SInt16, SInt32, Real32, Real64, String, Boolean, Object, SInt8, UInt8, UInt16, UInt32, SInt64, UInt64, DateTime, Reference, Char16 (Example: [System.Management.CimType]::GetNames([System.Management.CimType]))
-                                              Switch ($OSDVariableType)
+                                              $PropertyTypeFound = $False
+                                              
+                                              If (($OSDVariable.Value -is [DateTime]) -and ($PropertyTypeFound -eq $False))
                                                 {
-                                                    {($_ -imatch '.*Date.*') -or ($OSDVariableName -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
-                                                      {
-                                                          $PropertyType = "DateTime"
-                                                      }
-                                                  
-                                                    {($_ -imatch 'Bool|Boolean')}
-                                                      {
-                                                          $PropertyType = "Boolean"
-                                                      }
-                                                    
-                                                    {($_ -imatch 'Double')}
-                                                      {
-                                                          $PropertyType = "Real64"
-                                                      }
-                                                                                                        
-                                                    Default
-                                                      {
-                                                          $PropertyType = "String"
-                                                      }     
+                                                    $PropertyType = "DateTime"
+                                                    $PropertyTypeFound = $True
                                                 }
-                                                                                   
+                                              
+                                              If (($OSDVariable.Value -is [Boolean]) -and ($PropertyTypeFound -eq $False))
+                                                {
+                                                    $PropertyType = "Boolean"
+                                                    $PropertyTypeFound = $True
+                                                }
+                                              
+                                              If (($OSDVariable.Value -is [Double]) -and ($PropertyTypeFound -eq $False))
+                                                {
+                                                    $PropertyType = "Real64"
+                                                    $PropertyTypeFound = $True
+                                                }
+                                                                                            
+                                              If (($OSDVariable.Value -is [String]) -and ($PropertyTypeFound -eq $False))
+                                                {
+                                                    $PropertyType = "String"
+                                                    $PropertyTypeFound = $True
+                                                }
+                                                                                                                                    
                                             $WMIPropertyDefinition = "`t$($PropertyType) $($OSDVariableName);"
                                                       
                                             $WMIInstancePropertyName = "`t$($OSDVariableName);"
@@ -640,7 +778,7 @@ instance of $($Class)
                                           
                                     [Void]$MOFContents.AppendLine()
                                     
-#region Export dynamically created MOF
+                #region Export dynamically created MOF
                                     [System.IO.FileInfo]$MOFExportPath = "$([System.Environment]::SystemDirectory)\wbem\$($ScriptPath.BaseName).mof"
 
                                     $LogMessage = "####################Begin MOF File Contents####################`r`n$($MOFContents.ToString())`r`n####################End MOF File Contents####################`r`n`r`n"
@@ -649,9 +787,9 @@ instance of $($Class)
                                     If ($MOFExportPath.Directory.Exists -eq $False) {[Void][System.IO.Directory]::CreateDirectory($MOFExportPath.Directory.FullName)}
                                           
                                     $MOFContents.ToString() | Out-File -FilePath "$($MOFExportPath.FullName)" -Encoding ASCII -NoNewline -Force -Verbose
-#endregion
+                #endregion
 
-#region Import dynamically created MOF into WMI using MofComp
+                #region Import dynamically created MOF into WMI using MofComp
                                     [System.IO.FileInfo]$BinaryPath = "$([System.Environment]::SystemDirectory)\wbem\mofcomp.exe"
                                     [String]$BinaryParameters = "-AutoRecover `"$($MOFExportPath.FullName)`""
                                     [System.IO.FileInfo]$BinaryStandardOutputPath = "$($LogDir.FullName)\$($BinaryPath.BaseName)_StandardOutput.log"
@@ -707,6 +845,9 @@ instance of $($Class)
                                       $CIMInstance = Get-CIMInstance -Namespace ($Namespace) -ClassName ($Class)
                                     
                                       $CIMInstanceProperties = $CIMInstance.CimInstanceProperties | Where-Object {($_.Name -iin ($OSDVariables.Name))}
+
+                                      $LogMessage = "Attempting to set the property value(s) for the WMI class `"$($Class)`" located in the `"$($Namespace)`" namespace. Please Wait..."
+                                      Write-Verbose -Message "$($LogMessage)" -Verbose  
                                     
                                       ForEach ($CIMInstanceProperty In $CIMInstanceProperties)
                                         {
@@ -714,7 +855,7 @@ instance of $($Class)
                                             
                                             $OSDVariableProperties = $OSDVariables | Where-Object {($_.Name -ieq $CIMInstancePropertyName)}
                                             
-                                            $LogMessage = "Attempting to assign the WMI property value for `"$($CIMInstancePropertyName)`". Please Wait... | [Namespace: $($Namespace)] - [Class: $($Class)]"
+                                            $LogMessage = "Attempting to set the WMI property value for `"$($CIMInstancePropertyName)`" to `"$($OSDVariableProperties.Value)`". Please Wait..."
                                             Write-Verbose -Message "$($LogMessage)" -Verbose                                     
                                             
                                             Set-CIMInstance -InputObject ($CIMInstance) -Property @{"$($CIMInstancePropertyName)" = ($OSDVariableProperties.Value)}
@@ -722,9 +863,9 @@ instance of $($Class)
 
                                     #Show the WMI class AFTER the properties get their values assigned
                                       Write-Output -InputObject (Get-WMIObject -NameSpace ($Namespace) -Class ($Class))
-#endregion  
+                #endregion  
                               }
-#endregion
+              #endregion
                       }
                     Else
                       {
@@ -761,5 +902,12 @@ instance of $($Class)
         If ([String]::IsNullOrEmpty($_.Exception.Message)) {$ExceptionMessage = "$($_.Exception.Errors.Message -Join "`r`n`r`n")"} Else {$ExceptionMessage = "$($_.Exception.Message)"}
           
         $ErrorMessage = "[Error Message: $($ExceptionMessage)]`r`n`r`n[ScriptName: $($_.InvocationInfo.ScriptName)]`r`n[Line Number: $($_.InvocationInfo.ScriptLineNumber)]`r`n[Line Position: $($_.InvocationInfo.OffsetInLine)]`r`n[Code: $($_.InvocationInfo.Line.Trim())]`r`n"
-        If ($ContinueOnError.IsPresent -eq $False) {Throw "$($ErrorMessage)"}
+        Write-Error -Message "$($ErrorMessage)"
+        
+        Stop-Transcript -Verbose
+        
+        If ($ContinueOnError.IsPresent -eq $False)
+          {
+              [System.Environment]::Exit(50)
+          }
     }
